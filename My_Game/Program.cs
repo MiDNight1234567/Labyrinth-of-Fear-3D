@@ -1,17 +1,36 @@
-﻿using System;
-using System.Text;
-using System.Threading;
-using System.Linq;
-using System.Collections.Generic;
+﻿using System.Text;
+using System.Data;
+using WMPLib;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 
-namespace My_Game
+namespace Labyrinth_of_Fear_3D
 {
     internal class Program
     {
         private const int ScreenWidth = 240;
         private const int ScreenHeight = 120;
-        private const int MapWidth = 32;
-        private const int MapHeight = 32;
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetConsoleWindow();
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool SetConsoleScreenBufferSize(IntPtr hConsoleOutput, COORD dwSize);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct COORD
+        {
+            public short X;
+            public short Y;
+        }
+
+        private const int SW_MAXIMIZE = 3;
+
+        private const int MapWidth = 40;
+        private const int MapHeight = 60;
         private const double Fov = Math.PI / 3;
         private const double Depth = 16;
 
@@ -19,13 +38,43 @@ namespace My_Game
         private static double _playerY = 5;
         private static double _playerFOV = 0;
 
+        private static WindowsMediaPlayer SoundOfGame;
+        private static WindowsMediaPlayer FootstepSound;
+        private static WindowsMediaPlayer CollisionSound;
+        private static WindowsMediaPlayer EnemySound;
+        private static WindowsMediaPlayer DoorSound;
+
+        private static bool isMoving = false;
+
+        private static readonly List<(double X, double Y, double DirectionX, double DirectionY)> Enemies = new List<(double, double, double, double)>
+        {
+            (15, 15, 0, 1), // Враг 1: начальная позиция и направление
+            (20, 20, 1, 0)  // Враг 2: начальная позиция и направление
+        };
+
         private static readonly StringBuilder Map = new StringBuilder();
-        private static string originalMap; // Хранение оригинальной карты
+        private static string originalMap;
 
         private static readonly char[] Screen = new char[ScreenWidth * ScreenHeight];
 
+        private static readonly Random Random = new Random();
+
         static async Task Main(string[] args)
         {
+            // Максимизируем консольное окно
+            IntPtr consoleWindow = GetConsoleWindow();
+            ShowWindow(consoleWindow, SW_MAXIMIZE);
+
+            // Настройка размера буфера консоли
+            COORD bufferSize = new COORD { X = (short)Console.WindowWidth, Y = (short)Console.WindowHeight };
+            SetConsoleScreenBufferSize(consoleWindow, bufferSize);
+
+            // Вызов начального экрана
+            await ShowStartScreenAsync();
+
+            // Запуск фоновой музыки
+            InitializeSounds();
+
             Console.OutputEncoding = Encoding.UTF8; // Для корректного отображения символов
             Console.SetWindowSize(ScreenWidth, ScreenHeight);
             Console.SetBufferSize(ScreenWidth, ScreenHeight);
@@ -33,6 +82,7 @@ namespace My_Game
 
             InitMap();
             originalMap = Map.ToString(); // Сохранение оригинальной карты
+            GenerateRandomEnemies(13); // Добавление 5 случайных врагов
 
             DateTime dataTimeFrom = DateTime.Now;
 
@@ -46,15 +96,18 @@ namespace My_Game
                 if (Console.KeyAvailable)
                 {
                     ConsoleKey consoleKey = Console.ReadKey(intercept: true).Key;
+                    bool playerMoved = false; // Флаг для отслеживания, было ли движение
 
                     switch (consoleKey)
                     {
                         case ConsoleKey.A:
                             _playerFOV += elapsedTime * 2.0; // Регулировка скорости вращения
+                            playerMoved = true;
                             break;
 
                         case ConsoleKey.D:
                             _playerFOV -= elapsedTime * 2.0;
+                            playerMoved = true;
                             break;
 
                         case ConsoleKey.W:
@@ -63,12 +116,22 @@ namespace My_Game
                             double newPlayerXForward = _playerX + moveXForward;
                             double newPlayerYForward = _playerY + moveYForward;
 
-                            // Проверка на столкновение при движении вперед
-                            if (Map[(int)newPlayerYForward * MapWidth + (int)newPlayerXForward] != '#')
+                            // Проверка на касание двери
+                            char cellForward = Map[(int)newPlayerYForward * MapWidth + (int)newPlayerXForward];
+
+                            if (cellForward == 'D') // Проверка на дверь
+                            {
+                                await PlayDoorSoundAsync();
+                                Console.Clear();
+                                Console.WriteLine("You Won! You have found the door of truth!");
+                                Environment.Exit(0); // Завершение программы
+                            }
+                            else if (cellForward != '#')
                             {
                                 _playerX = newPlayerXForward;
                                 _playerY = newPlayerYForward;
                             }
+                            playerMoved = true;
                             break;
 
                         case ConsoleKey.S:
@@ -77,30 +140,66 @@ namespace My_Game
                             double newPlayerXBackward = _playerX + moveXBackward;
                             double newPlayerYBackward = _playerY + moveYBackward;
 
-                            // Проверка на столкновение при движении назад
                             if (Map[(int)newPlayerYBackward * MapWidth + (int)newPlayerXBackward] != '#')
                             {
                                 _playerX = newPlayerXBackward;
                                 _playerY = newPlayerYBackward;
                             }
+                            playerMoved = true;
                             break;
                     }
+
+                    // Обновление состояния движения
+                    if (playerMoved)
+                    {
+                        if (!isMoving)
+                        {
+                            isMoving = true;
+                            PlayFootstepSound(); // Начинаем воспроизведение звука шагов
+                        }
+                    }
+                    else if (isMoving)
+                    {
+                        isMoving = false;
+                        StopFootstepSoundAsync(); // Останавливаем воспроизведение звука шагов
+                    }
                 }
+                else if (isMoving) // Если клавиши не нажаты, останавливаем звук
+                {
+                    isMoving = false;
+                    StopFootstepSoundAsync();
+                }
+
+                // Обновление позиции врагов
+                UpdateEnemies(elapsedTime);
 
                 // Восстановление карты перед рисованием новых лучей
                 Map.Clear();
                 Map.Append(originalMap);
+
+                // Добавление врагов на карту
+                foreach (var enemy in Enemies)
+                {
+                    Map[(int)enemy.Y * MapWidth + (int)enemy.X] = 'E'; // 'E' для врагов
+                }
+
+                // Проверка на столкновение с врагом
+                if (Enemies.Any(enemy => (int)_playerX == (int)enemy.X && (int)_playerY == (int)enemy.Y))
+                {
+                    await HandleGameOver(); // Обработка завершения игры
+                    return; // Завершение основного цикла и возвращение к экрану выбора
+                }
 
                 // Прорисовка экрана
                 Array.Fill(Screen, ' '); // Очистка экрана
 
                 var rayCastingTasks = new List<Task<Dictionary<int, char>>>();
 
-                //Ray casting
+                // Ray casting
                 for (int x = 0; x < ScreenWidth; x++)
                 {
                     int x1 = x;
-                    rayCastingTasks.Add(item:Task.Run(function:() => CastRay(x1)));
+                    rayCastingTasks.Add(Task.Run(() => CastRay(x1)));
                 }
 
                 Dictionary<int, char>[] rays = await Task.WhenAll(rayCastingTasks);
@@ -137,6 +236,200 @@ namespace My_Game
             }
         }
 
+        private static async Task ShowStartScreenAsync()
+        {
+            Console.Clear();
+            Console.CursorVisible = false;
+            Console.SetWindowSize(ScreenWidth, ScreenHeight);
+            Console.SetBufferSize(ScreenWidth, ScreenHeight);
+
+            string[] options = { "START", "EXIT", "Инструкция" };
+            int selectedOption = 0;
+
+            // Получаем центр экрана
+            int centerX = ScreenWidth / 2;
+            int centerY = ScreenHeight / 2;
+
+            // Вычисляем максимальную ширину опций
+            int maxOptionWidth = options.Max(option => option.Length);
+
+            // Вычисляем вертикальное смещение для центровки
+            int verticalOffset = options.Length / 2;
+
+            while (true)
+            {
+                Console.Clear();
+
+                // Печатаем заголовок
+                Console.SetCursorPosition(centerX - 10, centerY - verticalOffset - 2);
+                Console.WriteLine("Labyrinth of Fear 3D");
+
+                // Печатаем опции по центру экрана
+                for (int i = 0; i < options.Length; i++)
+                {
+                    int optionX = centerX - (maxOptionWidth / 2); // Центрируем по горизонтали
+                    int optionY = centerY - verticalOffset + i; // Центрируем по вертикали
+
+                    Console.SetCursorPosition(optionX, optionY);
+
+                    if (i == selectedOption)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow; // Выделение выбранной опции
+                        Console.WriteLine("> " + options[i]);
+                        Console.ResetColor();
+                    }
+                    else
+                    {
+                        Console.WriteLine("  " + options[i]);
+                    }
+                }
+
+                switch (Console.ReadKey(true).Key)
+                {
+                    case ConsoleKey.UpArrow:
+                        selectedOption = (selectedOption == 0) ? options.Length - 1 : selectedOption - 1;
+                        break;
+                    case ConsoleKey.DownArrow:
+                        selectedOption = (selectedOption == options.Length - 1) ? 0 : selectedOption + 1;
+                        break;
+                    case ConsoleKey.Enter:
+                        if (selectedOption == 0) // START
+                        {
+                            return; // Продолжаем игру
+                        }
+                        else if (selectedOption == 1) // EXIT
+                        {
+                            ExitGame(); // Выход из игры
+                        }
+                        else if (selectedOption == 2) // Инструкция
+                        {
+                            await ShowInstructionAsync(); // Показать инструкцию
+                        }
+                        break;
+                }
+            }
+        }
+
+        private static async Task ShowInstructionAsync()
+        {
+            Console.Clear();
+            Console.WriteLine("Цель игры:\n\nВам предстоит исследовать лабиринт и найти дверь, которая приведет к победе. По пути вам придется избегать врагов и взаимодействовать с различными объектами.\r\n\r\nУправление:\r\n\r\nW – Двигайтесь вперед.\r\nS – Двигайтесь назад.\r\nA – Поверните влево.\r\nD – Поверните вправо.\r\n\nОсобенности:\r\n\r\nИгровое поле: Ваше движение происходит в ограниченном пространстве, а ваша цель – найти дверь.\r\nВраги: Будьте осторожны, враги могут быть на вашем пути. Если вы столкнетесь с врагом, игра закончится.\r\nДверь: Найдите дверь, чтобы выиграть игру.\r\n\nСоветы:\r\n\r\nРегулярно осматривайтесь и планируйте свои действия. Некоторые участки карты могут быть опасны.\r\nИспользуйте свою позицию для определения направления движения и избегайте врагов.\r\n\nУдачи!");
+            Console.WriteLine();
+            Console.WriteLine("Press Enter to return to the main menu...");
+            Console.ReadLine();
+        }
+
+        private static async Task ExitGame()
+        {
+            Console.Clear();
+            Console.WriteLine("Press Enter to exit...");
+            Environment.Exit(0); // Завершение процесса
+        }
+
+        private static async Task HandleGameOver()
+        {
+            await PlayEnemySoundAsync();
+            await PlayCollisionSoundAsync();
+            Console.Clear();
+            Console.WriteLine("Game Over! The enemy has consumed your soul!");
+            Console.WriteLine("Press Enter to return to the main menu...");
+            while (Console.ReadKey(true).Key != ConsoleKey.Enter)
+            {
+                // Ожидание нажатия клавиши Enter
+            }
+            await CleanupSoundsAsync();
+            await ShowStartScreenAsync();
+
+        }
+
+        // Метод для воспроизведения фоновой музыки
+        private static void InitializeSounds()
+        {
+            SoundOfGame = new WindowsMediaPlayer();
+            FootstepSound = new WindowsMediaPlayer();
+            CollisionSound = new WindowsMediaPlayer();
+            EnemySound = new WindowsMediaPlayer();
+            DoorSound = new WindowsMediaPlayer();
+
+            SoundOfGame = new WindowsMediaPlayer();
+            SoundOfGame.URL = @"E:\Resume - Project\Visual Studio\Labyrinth of Fear 3D\Labyrinth of Fear 3D\bin\Debug\\songs\\Sound-of-Game.mp3";
+            SoundOfGame.settings.setMode("loop", true); // Проигрывание в цикле
+            SoundOfGame.controls.play();
+            SoundOfGame.settings.volume = 80;
+
+            FootstepSound = new WindowsMediaPlayer();
+            FootstepSound.settings.volume = 50;
+
+            // Инициализация звука столкновения
+            CollisionSound = new WindowsMediaPlayer();
+            CollisionSound.settings.volume = 80;
+
+            EnemySound = new WindowsMediaPlayer();
+            EnemySound.settings.volume = 100;
+
+            DoorSound = new WindowsMediaPlayer();
+            DoorSound.settings.volume = 80;
+        }
+
+        private static async Task PlayCollisionSoundAsync()
+        {
+            CollisionSound.URL = @"E:\Resume - Project\Visual Studio\Labyrinth of Fear 3D\Labyrinth of Fear 3D\bin\Debug\\songs\\Young-Male-Scream.mp3";
+            CollisionSound.controls.play();
+            await Task.Delay(800); // Ожидание, чтобы звук успел проиграться (1000 мс = 1 секунда)
+        }
+
+        private static async Task PlayEnemySoundAsync()
+        {
+            EnemySound.URL = @"E:\Resume - Project\Visual Studio\Labyrinth of Fear 3D\Labyrinth of Fear 3D\bin\Debug\\songs\\Echo-Jumpscare.mp3";
+            EnemySound.controls.play();
+            await Task.Delay(500); // Ожидание, чтобы звук успел проиграться (1000 мс = 1 секунда)
+        }
+
+        private static async Task PlayDoorSoundAsync()
+        {
+            EnemySound.URL = @"E:\Resume - Project\Visual Studio\Labyrinth of Fear 3D\Labyrinth of Fear 3D\bin\Debug\\songs\\Door-open-close.mp3";
+            EnemySound.controls.play();
+            await Task.Delay(1000); // Ожидание, чтобы звук успел проиграться (1000 мс = 1 секунда)
+        }
+
+        private static void PlayFootstepSound()
+        {
+            FootstepSound.URL = @"E:\Resume - Project\Visual Studio\Labyrinth of Fear 3D\Labyrinth of Fear 3D\bin\Debug\\songs\\FootstepSound.mp3";
+            FootstepSound.controls.play();
+        }
+
+        private static async Task StopFootstepSoundAsync()
+        {
+            try
+            {
+                if (FootstepSound != null)
+                {
+                    FootstepSound.controls.stop();
+                    await Task.Delay(100); // Задержка для обработки остановки
+                }
+            }
+            catch (COMException ex)
+            {
+                // Логирование или обработка исключения
+                Console.WriteLine($"Error stopping footstep sound: {ex.Message}");
+            }
+        }
+
+        private static async Task CleanupSoundsAsync()
+        {
+            SoundOfGame.controls.stop();
+            FootstepSound.controls.stop();
+            CollisionSound.controls.stop();
+            EnemySound.controls.stop();
+            DoorSound.controls.stop();
+
+            SoundOfGame.close();
+            FootstepSound.close();
+            CollisionSound.close();
+            EnemySound.close();
+            DoorSound.close();
+        }
+
         public static Dictionary<int, char> CastRay(int x)
         {
             var result = new Dictionary<int, char>();
@@ -148,7 +441,18 @@ namespace My_Game
 
             double distanceToWall = 0;
             bool hitWall = false;
+            bool hitDoor = false; // Для отслеживания попадания на дверь
+            bool hitEnemy = false; // Для отслеживания попадания на врага
             bool isBound = false;
+
+            int enemyX = -1; // Для хранения координат врага
+            int enemyY = -1;
+            double enemyDistance = Depth; // Для хранения расстояния до врага
+
+            int dorX = -1; // Для хранения координат врага
+            int dorY = -1;
+            double dorDistance = Depth; // Для хранения расстояния до врага
+
 
             while (!hitWall && distanceToWall < Depth)
             {
@@ -194,6 +498,23 @@ namespace My_Game
                             Math.Acos(boundsVectorList[1].cos) < boundAngle)
                             isBound = true;
                     }
+                    else if (testCell == 'D')
+                    {
+                        hitWall = true;
+                        hitDoor = true; // Установить флаг, если луч попал в дверь
+                        dorX = testX;
+                        dorY = testY;
+                        dorDistance = distanceToWall;
+                    }
+                    else if (testCell == 'E')
+                    {
+                        hitWall = true;
+                        hitEnemy = true;
+                        // Сохраняем координаты врага и его расстояние
+                        enemyX = testX;
+                        enemyY = testY;
+                        enemyDistance = distanceToWall;
+                    }
                     else
                     {
                         Map[testY * MapWidth + testX] = '*'; // Рисуем луч на карте
@@ -206,21 +527,57 @@ namespace My_Game
 
             char wallShade;
 
-            if (isBound)
+            if (hitEnemy)
+            {
+                // Определяем яркость врага по расстоянию
+                char enemyShade;
+
+                if (enemyDistance < 5) enemyShade = 'E';  // Ближе = ярче
+                else if (enemyDistance < 10) enemyShade = 'e';
+                else if (enemyDistance < 15) enemyShade = 'f';
+                else enemyShade = ' ';
+
+                wallShade = enemyShade;
+            }
+            else if (hitDoor) // Если луч попал в дверь, используем другой символ
+            {
+                char dorShade;
+
+                if (dorDistance < 5) dorShade = 'D';  // Ближе = ярче
+                else if (dorDistance < 10) dorShade = 'd';
+                else if (dorDistance < 15) dorShade = 'o';
+                else dorShade = ' ';
+
+                wallShade = dorShade;
+            }
+            else if (isBound)
+            {
                 wallShade = '|';
-            else if (distanceToWall < Depth / 4d)
+            }
+            else if (distanceToWall <= Depth / 4.0)
+            {
                 wallShade = '\u2588';
-            else if (distanceToWall < Depth / 3d)
+            }
+            else if (distanceToWall < Depth / 3.0)
+            {
                 wallShade = '\u2593';
-            else if (distanceToWall < Depth / 2d)
+            }
+            else if (distanceToWall < Depth / 2.0)
+            {
                 wallShade = '\u2592';
+            }
             else if (distanceToWall < Depth)
+            {
                 wallShade = '\u2591';
-            else wallShade = ' ';
+            }
+            else
+            {
+                wallShade = ' ';
+            }
 
             for (int y = 0; y < ScreenHeight; y++)
             {
-                if (y <= ceiling)
+                if (y < ceiling)
                 {
                     result[y * ScreenWidth + x] = ' ';
                 }
@@ -232,16 +589,16 @@ namespace My_Game
                 {
                     char floorShade;
 
-                    double b = 1 - (y - ScreenHeight / 2d) / (ScreenHeight / 2d);
+                    double b = 1 - (y - ScreenHeight / 2.0) / (ScreenHeight / 2.0);
 
                     if (b < 0.25)
                         floorShade = '#';
                     else if (b < 0.5)
                         floorShade = 'x';
                     else if (b < 0.75)
-                        floorShade = '-';
-                    else if (b < 0.9)
                         floorShade = '.';
+                    else if (b < 0.9)
+                        floorShade = '-';
                     else
                         floorShade = ' ';
 
@@ -254,40 +611,108 @@ namespace My_Game
 
         private static void InitMap()
         {
+            Random random = new Random();
+
             // Инициализация карты
             Map.Clear();
-            Map.Append("################################");
-            Map.Append("#.....................#........#");
-            Map.Append("#.....................#........#");
-            Map.Append("#.....................#........#");
-            Map.Append("#.....................#........#");
-            Map.Append("#.....................#........#");
-            Map.Append("#.....................#........#");
-            Map.Append("#.....................#........#");
-            Map.Append("#.....................#........#");
-            Map.Append("#......######.........#........#");
-            Map.Append("#.....................#........#");
-            Map.Append("#.....................#........#");
-            Map.Append("#.....................#.....#..#");
-            Map.Append("#.....................#######..#");
-            Map.Append("#..............................#");
-            Map.Append("#..............................#");
-            Map.Append("#..............................#");
-            Map.Append("#..............................#");
-            Map.Append("#..............................#");
-            Map.Append("#############..................#");
-            Map.Append("#...........#..................#");
-            Map.Append("#..#######.....................#");
-            Map.Append("#..#.....#.....................#");
-            Map.Append("#.....#..#..#..................#");
-            Map.Append("#.....#..#..#..................#");
-            Map.Append("#######..#..#..................#");
-            Map.Append("#.....#..#..#..................#");
-            Map.Append("#..#.....#..#..................#");
-            Map.Append("#..#...######..................#");
-            Map.Append("#..#........#..................#");
-            Map.Append("#..#........#..................#");
-            Map.Append("################################");
+
+            // Заполнение карты стенами по периметру
+            for (int x = 0; x < MapWidth; x++)
+            {
+                Map.Append('#');
+            }
+            for (int y = 1; y < MapHeight - 1; y++)
+            {
+                Map.Append('#');
+                for (int x = 1; x < MapWidth - 1; x++)
+                {
+                    char cell = random.NextDouble() < 0.2 ? '#' : '.'; // 20% вероятность стены
+                    Map.Append(cell);
+                }
+                Map.Append('#');
+            }
+            for (int x = 0; x < MapWidth; x++)
+            {
+                Map.Append('#');
+            }
+
+            // Размещение двери
+            int doorX = random.Next(1, MapWidth - 1);
+            int doorY = random.Next(1, MapHeight - 1);
+            Map[doorY * MapWidth + doorX] = 'D';
+
+            // Сохранение оригинальной карты
+            originalMap = Map.ToString();
+        }
+
+
+        // Метод для обновления позиции врагов
+        private static void UpdateEnemies(double elapsedTime)
+        {
+            for (int i = 0; i < Enemies.Count; i++)
+            {
+                var (X, Y, DirX, DirY) = Enemies[i];
+
+                // Определяем небольшое смещение врагов
+                double moveX = DirX * elapsedTime * 2; // Скорость уменьшена до 2 для плавности
+                double moveY = DirY * elapsedTime * 2;
+
+                double newX = X + moveX;
+                double newY = Y + moveY;
+
+                // Проверка столкновения с картой
+                if (newX >= 0 && newX < MapWidth && Map[(int)Y * MapWidth + (int)newX] != '#')
+                {
+                    X = newX;
+                }
+                else
+                {
+                    // Если столкнулись со стеной, меняем направление
+                    DirX = -DirX;
+                }
+
+                if (newY >= 0 && newY < MapHeight && Map[(int)newY * MapWidth + (int)X] != '#')
+                {
+                    Y = newY;
+                }
+                else
+                {
+                    // Если столкнулись со стеной, меняем направление
+                    DirY = -DirY;
+                }
+
+                // Обновление позиции и направления врага
+                Enemies[i] = (X, Y, DirX, DirY);
+
+                // Случайное изменение направления через каждые 2-5 секунд
+                if (Random.NextDouble() < 0.02)
+                {
+                    DirX = (Random.NextDouble() - 0.5) * 2;
+                    DirY = (Random.NextDouble() - 0.5) * 2;
+                    Enemies[i] = (X, Y, DirX, DirY);
+                }
+            }
+        }
+        private static void GenerateRandomEnemies(int count)
+        {
+            Random random = new Random();
+
+            while (Enemies.Count < count)
+            {
+                int x = random.Next(1, MapWidth - 1);
+                int y = random.Next(1, MapHeight - 1);
+
+                // Проверка, чтобы не ставить врагов на стенки, дверь и на место игрока
+                if (Map[y * MapWidth + x] == '.' && !(x == (int)_playerX && y == (int)_playerY))
+                {
+                    // Генерация случайного направления
+                    double dirX = (random.NextDouble() - 0.5) * 2;
+                    double dirY = (random.NextDouble() - 0.5) * 2;
+
+                    // Добавляем врага в список с координатами и направлением
+                    Enemies.Add((x, y, dirX, dirY));
+                }
+            }
         }
     }
 }
