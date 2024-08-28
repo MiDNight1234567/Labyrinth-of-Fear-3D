@@ -7,8 +7,8 @@ namespace Labyrinth_of_Fear_3D
 {
     internal class Program
     {
-        private const int ScreenWidth = 240;
-        private const int ScreenHeight = 120;
+        private static int ScreenWidth = Console.LargestWindowWidth; // Максимально допустимая ширина окна
+        private static int ScreenHeight = Console.LargestWindowHeight; // Максимально допустимая высота окна
 
         [DllImport("kernel32.dll")]
         private static extern IntPtr GetConsoleWindow();
@@ -221,7 +221,11 @@ namespace Labyrinth_of_Fear_3D
                 {
                     for (int y = 0; y < MapHeight; y++)
                     {
-                        Screen[(y + 1) * ScreenWidth + x] = Map[y * MapWidth + x];
+                        int screenIndex = (y * ScreenWidth) + x;
+                        if (screenIndex < Screen.Length) // проверка, чтобы не выйти за пределы массива Screen
+                        {
+                            Screen[screenIndex] = Map[y * MapWidth + x];
+                        }
                     }
                 }
 
