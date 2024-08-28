@@ -1,7 +1,6 @@
 ﻿using System.Text;
 using System.Data;
 using WMPLib;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace Labyrinth_of_Fear_3D
@@ -34,8 +33,8 @@ namespace Labyrinth_of_Fear_3D
         private const double Fov = Math.PI / 3;
         private const double Depth = 16;
 
-        private static double _playerX = 5;
-        private static double _playerY = 5;
+        private static double _playerX;
+        private static double _playerY;
         private static double _playerFOV = 0;
 
         private static WindowsMediaPlayer SoundOfGame;
@@ -84,6 +83,9 @@ namespace Labyrinth_of_Fear_3D
             originalMap = Map.ToString(); // Сохранение оригинальной карты
             GenerateRandomEnemies(13); // Добавление 5 случайных врагов
 
+            // Установка случайной начальной позиции игрока
+            (_playerX, _playerY) = GetRandomStartPosition();
+
             DateTime dataTimeFrom = DateTime.Now;
 
             while (true)
@@ -121,10 +123,8 @@ namespace Labyrinth_of_Fear_3D
 
                             if (cellForward == 'D') // Проверка на дверь
                             {
-                                await PlayDoorSoundAsync();
-                                Console.Clear();
-                                Console.WriteLine("You Won! You have found the door of truth!");
-                                Environment.Exit(0); // Завершение программы
+                                await HandleVictory();
+                                return;
                             }
                             else if (cellForward != '#')
                             {
@@ -161,13 +161,13 @@ namespace Labyrinth_of_Fear_3D
                     else if (isMoving)
                     {
                         isMoving = false;
-                        StopFootstepSoundAsync(); // Останавливаем воспроизведение звука шагов
+                        await StopFootstepSoundAsync(); // Останавливаем воспроизведение звука шагов
                     }
                 }
                 else if (isMoving) // Если клавиши не нажаты, останавливаем звук
                 {
                     isMoving = false;
-                    StopFootstepSoundAsync();
+                    await StopFootstepSoundAsync();
                 }
 
                 // Обновление позиции врагов
@@ -236,6 +236,20 @@ namespace Labyrinth_of_Fear_3D
             }
         }
 
+        // Метод для получения случайной начальной позиции на карте
+        private static (double X, double Y) GetRandomStartPosition()
+        {
+            int startX, startY;
+
+            do
+            {
+                startX = Random.Next(1, MapWidth - 1);
+                startY = Random.Next(1, MapHeight - 1);
+            } while (Map[startY * MapWidth + startX] != '.'); // Проверка, чтобы начальная позиция была безопасной
+
+            return (startX, startY);
+        }
+
         private static async Task ShowStartScreenAsync()
         {
             Console.Clear();
@@ -299,7 +313,7 @@ namespace Labyrinth_of_Fear_3D
                         }
                         else if (selectedOption == 1) // EXIT
                         {
-                            ExitGame(); // Выход из игры
+                             await ExitGame(); // Выход из игры
                         }
                         else if (selectedOption == 2) // Инструкция
                         {
@@ -313,7 +327,7 @@ namespace Labyrinth_of_Fear_3D
         private static async Task ShowInstructionAsync()
         {
             Console.Clear();
-            Console.WriteLine("Цель игры:\n\nВам предстоит исследовать лабиринт и найти дверь, которая приведет к победе. По пути вам придется избегать врагов и взаимодействовать с различными объектами.\r\n\r\nУправление:\r\n\r\nW – Двигайтесь вперед.\r\nS – Двигайтесь назад.\r\nA – Поверните влево.\r\nD – Поверните вправо.\r\n\nОсобенности:\r\n\r\nИгровое поле: Ваше движение происходит в ограниченном пространстве, а ваша цель – найти дверь.\r\nВраги: Будьте осторожны, враги могут быть на вашем пути. Если вы столкнетесь с врагом, игра закончится.\r\nДверь: Найдите дверь, чтобы выиграть игру.\r\n\nСоветы:\r\n\r\nРегулярно осматривайтесь и планируйте свои действия. Некоторые участки карты могут быть опасны.\r\nИспользуйте свою позицию для определения направления движения и избегайте врагов.\r\n\nУдачи!");
+            Console.WriteLine("Цель игры:\n\nВам предстоит исследовать лабиринт и найти дверь, которая приведет к победе. По пути вам придется избегать врагов и взаимодействовать с различными объектами.\r\n\r\nУправление:\r\n\r\nW – Двигайтесь вперед.\r\nS – Двигайтесь назад.\r\nA – Поверните влево.\r\nD – Поверните вправо.\r\n\nОсобенности:\r\n\r\nИгровое поле: Ваше движение происходит в ограниченном пространстве, а ваша цель – найти дверь.\r\nВраги(E): Будьте осторожны, враги могут быть на вашем пути. Если вы столкнетесь с врагом, игра закончится.\r\nДверь(D): Найдите дверь, чтобы выиграть игру.\r\n\nСоветы:\r\n\r\nРегулярно осматривайтесь и планируйте свои действия. Некоторые участки карты могут быть опасны.\r\nИспользуйте свою позицию для определения направления движения и избегайте врагов.\r\n\nУдачи!");
             Console.WriteLine();
             Console.WriteLine("Press Enter to return to the main menu...");
             Console.ReadLine();
@@ -324,6 +338,37 @@ namespace Labyrinth_of_Fear_3D
             Console.Clear();
             Console.WriteLine("Press Enter to exit...");
             Environment.Exit(0); // Завершение процесса
+        }
+
+        private static async Task ResetGame()
+        {
+            Console.Clear();
+
+            // Остановка звуков
+            await StopFootstepSoundAsync();
+            SoundOfGame.controls.stop();
+
+            // Очистка списка врагов
+            Enemies.Clear();
+
+            // Пересоздание карты
+            InitMap();
+            originalMap = Map.ToString(); // Сохранение оригинальной карты
+
+            // Генерация новых врагов
+            GenerateRandomEnemies(13); // Количество врагов можно изменить по необходимости
+
+            // Установка случайной начальной позиции игрока
+            (_playerX, _playerY) = GetRandomStartPosition();
+
+            // Сброс других игровых переменных
+            _playerFOV = 0; // начальный угол обзора
+
+            // Ожидание некоторого времени перед началом новой игры (опционально)
+            //await Task.Delay(1000);
+
+            // Перезапуск основного игрового цикла
+            await Main(new string[0]); // Вы можете использовать параметры по умолчанию или передавать другие, если необходимо
         }
 
         private static async Task HandleGameOver()
@@ -337,9 +382,26 @@ namespace Labyrinth_of_Fear_3D
             {
                 // Ожидание нажатия клавиши Enter
             }
+            await CleanupResources();
             await CleanupSoundsAsync();
-            await ShowStartScreenAsync();
+            await ResetGame(); // Сброс игры и возвращение к начальному экрану
 
+        }
+
+        // Изменим победный сценарий
+        private static async Task HandleVictory()
+        {
+            await PlayDoorSoundAsync();
+            Console.Clear();
+            Console.WriteLine("You Won! You have found the door of truth!");
+            Console.WriteLine("Press Enter to return to the main menu...");
+            while (Console.ReadKey(true).Key != ConsoleKey.Enter)
+            {
+                // Ожидание нажатия клавиши Enter
+            }
+            await CleanupResources();
+            await CleanupSoundsAsync();
+            await ResetGame(); // Сброс игры и возвращение к начальному экрану
         }
 
         // Метод для воспроизведения фоновой музыки
@@ -428,6 +490,39 @@ namespace Labyrinth_of_Fear_3D
             CollisionSound.close();
             EnemySound.close();
             DoorSound.close();
+        }
+
+        private static async Task CleanupResources()
+        {
+            if (SoundOfGame != null)
+            {
+                SoundOfGame.controls.stop();
+                SoundOfGame.close();
+            }
+            // То же самое для других звуковых объектов
+            if (FootstepSound != null)
+            {
+                FootstepSound.controls.stop();
+                FootstepSound.close();
+            }
+
+            if (CollisionSound != null)
+            {
+                CollisionSound.controls.stop();
+                CollisionSound.close();
+            }
+
+            if (EnemySound != null)
+            {
+                EnemySound.controls.stop();
+                EnemySound.close();
+            }
+
+            if (DoorSound != null)
+            {
+                DoorSound.controls.stop();
+                DoorSound.close();
+            }
         }
 
         public static Dictionary<int, char> CastRay(int x)
@@ -621,6 +716,7 @@ namespace Labyrinth_of_Fear_3D
             {
                 Map.Append('#');
             }
+
             for (int y = 1; y < MapHeight - 1; y++)
             {
                 Map.Append('#');
